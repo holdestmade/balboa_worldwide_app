@@ -32,6 +32,8 @@ class MQTTBridge
     @homie = MQTT::Homie::Device.new(device_id, "BWA Link", mqtt: mqtt_uri, root_topic: root_topic)
     @bwa = bwa
 
+    BWA.logger.warn "[BWA] Custom build with Bridge Connected + Climate discovery loaded"
+
     # Publish "bridge connected" entity/state right away (no spa required)
     publish_hass_bridge_connected_discovery
     publish_hass_bridge_connected_state("online")
