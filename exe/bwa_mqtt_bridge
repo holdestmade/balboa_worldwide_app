@@ -38,7 +38,7 @@ class MQTTBridge
 
     BWA.logger.warn "[BWA] Custom build with Bridge Connected + Climate discovery loaded"
 
-    # Make sure we mark offline at exit
+    # Mark offline at exit
     at_exit { publish_hass_bridge_connected_state("offline") }
 
     # spin until we have a full configuration
@@ -516,12 +516,11 @@ class MQTTBridge
     BWA.logger.warn "Failed to publish bridge connected discovery: #{e.class}: #{e.message}"
   end
 
-def publish_hass_bridge_connected_state(state)
-  dev_id = @homie.id
-  topic  = "bwa/#{dev_id}/bridge/connected"
+  def publish_hass_bridge_connected_state(state)
+    dev_id = @homie.id
+    topic  = "bwa/#{dev_id}/bridge/connected"
 
-  begin
-    # Build client from URI, then set will on the instance
+    # Build client, set will on instance (compatible with mqtt-ccutrer)
     client = MQTT::Client.new(@mqtt_uri)
     client.will_topic   = topic
     client.will_payload = "offline"
