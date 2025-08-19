@@ -539,20 +539,23 @@ class MQTTBridge
     BWA.logger.warn "Failed to publish bridge connected discovery: #{e.class}: #{e.message}"
   end
 
-  def publish_hass_bridge_connected_state(state)
-    dev_id = @homie.id
-    topic  = "bwa/#{dev_id}/bridge/connected"
-    # Use will_* so broker flips to offline if we die unexpectedly
-    MQTT::Client.connect(@mqtt_uri,
-                         will_topic: topic,
-                         will_payload: "offline",
-                         will_retain: true,
-                         will_qos: 1) do |c|
-      c.publish(topic, state, retain: true, qos: 1)
-    end
-  rescue => e
-    BWA.logger.warn "Failed to publish bridge connected state: #{e.class}: #{e.message}"
+def publish_hass_bridge_connected_state(state)
+  dev_id = @homie.id
+  topic  = "bwa/#{dev_id}/bridge/connected"
+
+  # Pass options as a positional Hash (3rd arg), not keywords
+  opts = {
+    will_topic:   topic,
+    will_payload: "offline",
+    will_retain:  true,
+    will_qos:     1
+  }
+
+  MQTT::Client.connect(@mqtt_uri, nil, opts) do |c|
+    c.publish(topic, state, retain: true, qos: 1)
   end
+rescue => e
+  BWA.logger.warn "Failed to publish bridge connected state: #{e.class}: #{e.message}"
 end
 
 mqtt_uri = ARGV.shift
