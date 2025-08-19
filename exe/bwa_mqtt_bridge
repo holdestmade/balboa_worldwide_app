@@ -4,6 +4,7 @@
 require "sd_notify"
 require "set"
 require "json"
+require "mqtt"
 require "mqtt/homie/home_assistant"
 
 require "bwa/logger"
@@ -25,6 +26,7 @@ class MQTTBridge
   def initialize(mqtt_uri, bwa, device_id: "bwa", root_topic: "homie")
     Thread.abort_on_exception = true
 
+    @mqtt_uri = mqtt_uri
     @homie = MQTT::Homie::Device.new(device_id, "BWA Link", mqtt: mqtt_uri, root_topic: root_topic)
     @bwa = bwa
 
@@ -50,6 +52,9 @@ class MQTTBridge
 
     publish_basic_attributes
     @homie.publish
+
+    # Publish HA Climate discovery (retained)
+    publish_hass_climate_discovery
 
     # Tell systemd we've started up OK. Ignored if systemd not in use.
     BWA.logger.warn "Balboa MQTT Bridge running (version #{BWA::VERSION})"
@@ -88,6 +93,8 @@ class MQTTBridge
           @homie.init do
             @homie["spa"]["temperature-scale"].value = @bwa.temperature_scale
             update_temperature_scale
+            # also republish climate discovery to reflect new limits/step
+            publish_hass_climate_discovery
           end
         end
 
@@ -422,6 +429,71 @@ class MQTTBridge
       icon: "mdi:hot-tub"
     )
     @homie["spa"]["current-temperature"].hass_sensor(device_class: :temperature)
+  end
+
+  # --- NEW: Publish Home Assistant MQTT Climate discovery (retained) ---
+  def publish_hass_climate_discovery
+    hass_prefix = ENV["HASS_DISCOVERY_PREFIX"] || "homeassistant"
+    dev_id = @homie.id
+    name = "BWA Link"
+    homie_base = "homie/#{dev_id}/spa"
+    availability_topic = "homie/#{dev_id}/$state"
+
+    # temperature limits/steps based on current scale
+    if @bwa.temperature_scale == :celsius
+      min_temp = 10
+      max_temp = 40
+      temp_step = 1.0
+    else
+      min_temp = 50
+      max_temp = 106
+      temp_step = 1
+    end
+
+    payload = {
+      name: "#{name} Climate",
+      unique_id: "#{dev_id}_spa_climate",
+      object_id: "spa",
+      device: {
+        identifiers: ["#{dev_id}_spa"],
+        manufacturer: "Balboa Water Group",
+        name: name,
+        model: @bwa.model,
+        sw_version: BWA::VERSION
+      },
+      availability: [
+        {
+          topic: availability_topic,
+          payload_available: "ready",
+          payload_not_available: "lost"
+        }
+      ],
+      # HVAC modes via heating-mode mapping
+      modes: ["heat", "off"],
+      mode_state_topic: "#{homie_base}/heating-mode",
+      mode_state_template: "{{ 'off' if (value | lower) == 'rest' else 'heat' }}",
+      mode_command_topic: "#{homie_base}/heating-mode/set",
+      mode_command_template: "{{ 'rest' if value == 'off' else 'ready' }}",
+      # Temperatures
+      current_temperature_topic: "#{homie_base}/current-temperature",
+      temperature_state_topic:   "#{homie_base}/target-temperature",
+      temperature_command_topic: "#{homie_base}/target-temperature/set",
+      min_temp: min_temp,
+      max_temp: max_temp,
+      temp_step: temp_step,
+      # Action badge
+      action_topic: "#{homie_base}/heating",
+      action_template: "{{ 'heating' if value in ['true','True',true,1,'1','on','ON'] else 'idle' }}"
+    }
+
+    topic = "#{hass_prefix}/climate/#{dev_id}/spa/config"
+
+    # Publish retained discovery
+    MQTT::Client.connect(@mqtt_uri) do |c|
+      c.publish(topic, payload.to_json, true, 1)
+    end
+  rescue => e
+    BWA.logger.warn "Failed to publish HA climate discovery: #{e.class}: #{e.message}"
   end
 end
 
