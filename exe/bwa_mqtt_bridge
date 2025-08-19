@@ -4,7 +4,7 @@
 require "sd_notify"
 require "set"
 require "json"
-require "mqtt"                               # direct MQTT client
+require "mqtt"                               # direct MQTT publishes
 require "mqtt/homie/home_assistant"
 
 require "bwa/logger"
@@ -32,14 +32,13 @@ class MQTTBridge
     @homie = MQTT::Homie::Device.new(device_id, "BWA Link", mqtt: mqtt_uri, root_topic: root_topic)
     @bwa = bwa
 
-    # Publish a "Bridge Connected" entity/state immediately (no spa required)
+    # Publish a "Bridge Connected" entity + state immediately (no spa required)
     publish_hass_bridge_connected_discovery
     publish_hass_bridge_connected_state("online")
 
-    # Make it obvious in logs that this custom build is active
     BWA.logger.warn "[BWA] Custom build with Bridge Connected + Climate discovery loaded"
 
-    # Ensure we mark offline on clean exit
+    # Make sure we mark offline at exit
     at_exit { publish_hass_bridge_connected_state("offline") }
 
     # spin until we have a full configuration
@@ -68,7 +67,6 @@ class MQTTBridge
     # Publish HA Climate discovery (retained)
     publish_hass_climate_discovery
 
-    # Tell systemd we've started up OK. Ignored if systemd not in use.
     BWA.logger.warn "Balboa MQTT Bridge running (version #{BWA::VERSION})"
     SdNotify.ready
 
@@ -86,14 +84,11 @@ class MQTTBridge
           node["enabled"].value = message.cycle2_enabled? if i == 1
         end
       when BWA::Messages::Status
-        # make sure time is in sync
+        # keep spa time in sync
         now = Time.now
         now_minutes = (now.hour * 60) + now.min
         spa_minutes = (message.hour * 60) + message.minute
-        # check the difference in both directions
         diff = [(spa_minutes - now_minutes) % 1440, 1440 - ((spa_minutes - now_minutes) % 1440)].min
-
-        # allow a skew of 1 minute, since the seconds will always be off
         if diff > 1
           spa_time_str = format("%02d:%02d", message.hour, message.minute)
           now_str = format("%02d:%02d", now.hour, now.min)
@@ -105,7 +100,6 @@ class MQTTBridge
           @homie.init do
             @homie["spa"]["temperature-scale"].value = @bwa.temperature_scale
             update_temperature_scale
-            # Republish climate discovery to reflect new limits/step
             publish_hass_climate_discovery
           end
         end
@@ -145,7 +139,6 @@ class MQTTBridge
           @homie["spa"]["aux#{i + 1}"].value = @bwa.lights[i]
         end
 
-        # Tell systemd we are still alive and kicking. Ignored if systemd not in use.
         SdNotify.watchdog
       end
     end
@@ -159,23 +152,21 @@ class MQTTBridge
       next value if value == "toggle"
       next true if value == "true"
       next false if value == "false"
-
       value.to_i if value.match?(/^\d+$/)
     end
     allowed_items = BWA::Messages::ToggleItem::ITEMS.keys.map(&:to_s)
     allow_toggles = lambda do |value|
       next unless allowed_items.include?(value)
-
       value
     end
 
     @homie.node("spa", "Hot Tub", @bwa.model) do |spa|
       command = spa.property("command",
-                             "Send a command to the tub",
-                             :enum,
-                             format: %w[normal_operation clear_notification soak],
-                             retained: false,
-                             non_standard_value_check: allow_toggles) do |value|
+        "Send a command to the tub",
+        :enum,
+        format: %w[normal_operation clear_notification soak],
+        retained: false,
+        non_standard_value_check: allow_toggles) do |value|
         @bwa.toggle_item(value.to_sym)
       end
       command.hass_button(name: "Clear Notification",
@@ -195,7 +186,6 @@ class MQTTBridge
                    hass: { switch: { icon: "mdi:pause-octagon" } },
                    non_standard_value_check: allow_toggle) do |value|
         next @bwa.toggle_hold if value == "toggle"
-
         @bwa.hold = value
       end
       spa.property("priming", "Priming", :boolean, @bwa.priming, hass: { binary_sensor: { icon: "mdi:fast-forward" } })
@@ -212,7 +202,6 @@ class MQTTBridge
                    hass: { select: { icon: "mdi:cog-play" } },
                    non_standard_value_check: allow_toggle) do |value|
         next @bwa.toggle_heating_mode if value == "toggle"
-
         @bwa.heating_mode = value.to_sym
       end
       spa.property("temperature-scale",
@@ -245,7 +234,6 @@ class MQTTBridge
                    hass: { select: { icon: "mdi:thermometer-lines" } },
                    non_standard_value_check: allow_toggle) do |value|
         next @bwa.toggle_temperature_range if value == "toggle"
-
         @bwa.temperature_range = value.to_sym
       end
       spa.property("current-temperature", "Current Water Temperature", :float, @bwa.current_temperature)
@@ -274,7 +262,6 @@ class MQTTBridge
                      non_standard_value_check: allow_toggle_or_speed,
                      **kwargs) do |value|
           next @bwa.toggle_blower if value == "toggle"
-
           @bwa.blower = value
         end
       end
@@ -287,7 +274,6 @@ class MQTTBridge
                      hass: { switch: { icon: "mdi:sprinkler-fire" } },
                      non_standard_value_check: allow_toggle) do |value|
           next @bwa.toggle_mister if value == "toggle"
-
           @bwa.mister = value
         end
       end
@@ -303,14 +289,12 @@ class MQTTBridge
       single_pump = @bwa.configuration.pumps.count { |speeds| !speeds.zero? } == 1
       @bwa.configuration.pumps.each_with_index do |speeds, i|
         next if speeds.zero?
-
         if speeds == 1
           args = [:boolean, !@bwa.pumps[i].zero?]
           kwargs = { hass: { switch: { icon: "mdi:chart-bubble" } } }
         else
           args = [:integer, @bwa.pumps[i]]
-          kwargs = { format: 0..speeds,
-                     hass: { number: { icon: "mdi:chart-bubble" } } }
+          kwargs = { format: 0..speeds, hass: { number: { icon: "mdi:chart-bubble" } } }
         end
         name = single_pump ? "Pump" : "Pump #{i + 1}"
         spa.property("pump#{i + 1}",
@@ -319,7 +303,6 @@ class MQTTBridge
                      non_standard_value_check: allow_toggle_or_speed,
                      **kwargs) do |value|
           next @bwa.toggle_pump(i) if value == "toggle"
-
           @bwa.set_pump(i, value)
         end
       end
@@ -327,7 +310,6 @@ class MQTTBridge
       single_light = @bwa.configuration.lights.count(&:itself)
       @bwa.configuration.lights.each_with_index do |exists, i|
         next unless exists
-
         name = single_light ? "Lights" : "Lights #{i + 1}"
         spa.property("light#{i + 1}",
                      name,
@@ -336,14 +318,12 @@ class MQTTBridge
                      hass: { light: { icon: "mdi:car-parking-lights" } },
                      non_standard_value_check: allow_toggle) do |value|
           next @bwa.toggle_light(i) if value == "toggle"
-
           @bwa.set_light(i, value)
         end
       end
 
       @bwa.configuration.aux.each_with_index do |exists, i|
         next unless exists
-
         spa.property("aux#{i + 1}",
                      "Auxiliary #{i + 1}",
                      :boolean,
@@ -351,7 +331,6 @@ class MQTTBridge
                      hass: :switch,
                      non_standard_value_check: allow_toggle) do |value|
           next @bwa.toggle_aux(i) if value == "toggle"
-
           @bwa.set_aux(i, value)
         end
       end
@@ -444,11 +423,9 @@ class MQTTBridge
   # ---------- Helpers to publish via MQTT ----------
   def mqtt_publish(topic, payload, retain: false, qos: 1)
     BWA.logger.info "MQTT publish → #{topic} (retain=#{retain})"
-    # Direct publish with keyword args (compatible with mqtt-ccutrer-1.0.3)
     MQTT::Client.connect(@mqtt_uri) { |c| c.publish(topic, payload, retain: retain, qos: qos) }
   rescue => e
     BWA.logger.warn "Direct MQTT publish failed: #{e.class}: #{e.message}"
-    # Fallback: try the Homie client's MQTT, if available
     begin
       if @homie.respond_to?(:mqtt) && @homie.mqtt.respond_to?(:publish)
         @homie.mqtt.publish(topic, payload, retain: retain)
@@ -539,23 +516,24 @@ class MQTTBridge
     BWA.logger.warn "Failed to publish bridge connected discovery: #{e.class}: #{e.message}"
   end
 
-def publish_hass_bridge_connected_state(state)
-  dev_id = @homie.id
-  topic  = "bwa/#{dev_id}/bridge/connected"
+  def publish_hass_bridge_connected_state(state)
+    dev_id = @homie.id
+    topic  = "bwa/#{dev_id}/bridge/connected"
 
-  # Pass options as a positional Hash (3rd arg), not keywords
-  opts = {
-    will_topic:   topic,
-    will_payload: "offline",
-    will_retain:  true,
-    will_qos:     1
-  }
+    # mqtt-ccutrer expects connect options as a positional Hash (3rd arg)
+    opts = {
+      will_topic:   topic,
+      will_payload: "offline",
+      will_retain:  true,
+      will_qos:     1
+    }
 
-  MQTT::Client.connect(@mqtt_uri, nil, opts) do |c|
-    c.publish(topic, state, retain: true, qos: 1)
+    MQTT::Client.connect(@mqtt_uri, nil, opts) do |c|
+      c.publish(topic, state, retain: true, qos: 1)
+    end
+  rescue => e
+    BWA.logger.warn "Failed to publish bridge connected state: #{e.class}: #{e.message}"
   end
-rescue => e
-  BWA.logger.warn "Failed to publish bridge connected state: #{e.class}: #{e.message}"
 end
 
 mqtt_uri = ARGV.shift
