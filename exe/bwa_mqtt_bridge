@@ -516,19 +516,19 @@ class MQTTBridge
     BWA.logger.warn "Failed to publish bridge connected discovery: #{e.class}: #{e.message}"
   end
 
-  def publish_hass_bridge_connected_state(state)
-    dev_id = @homie.id
-    topic  = "bwa/#{dev_id}/bridge/connected"
+def publish_hass_bridge_connected_state(state)
+  dev_id = @homie.id
+  topic  = "bwa/#{dev_id}/bridge/connected"
 
-    # mqtt-ccutrer expects connect options as a positional Hash (3rd arg)
-    opts = {
-      will_topic:   topic,
-      will_payload: "offline",
-      will_retain:  true,
-      will_qos:     1
-    }
+  begin
+    # Build client from URI, then set will on the instance
+    client = MQTT::Client.new(@mqtt_uri)
+    client.will_topic   = topic
+    client.will_payload = "offline"
+    client.will_retain  = true
+    client.will_qos     = 1
 
-    MQTT::Client.connect(@mqtt_uri, nil, opts) do |c|
+    client.connect do |c|
       c.publish(topic, state, retain: true, qos: 1)
     end
   rescue => e
